@@ -1,0 +1,313 @@
+---
+interface Props {
+  id?: string;
+  class?: string;
+}
+
+const { id = "hero", class: className = "" } = Astro.props;
+---
+
+<section id={id} class:list={["three-hero-container", className]}>
+  <canvas id="three-hero-canvas" class="three-hero-canvas" aria-hidden="true"></canvas>
+  <div class="three-hero-content">
+    <slot />
+  </div>
+</section>
+
+<style>
+  .three-hero-container {
+    position: relative;
+    width: 100%;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 40%, #151828 0%, #08090d 80%, #050608 100%);
+    content-visibility: auto;
+    contain-intrinsic-size: auto none auto 100vh;
+  }
+
+  .three-hero-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+    pointer-events: none;
+    display: block;
+  }
+
+  .three-hero-content {
+    position: relative;
+    z-index: 10;
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 3rem 1.5rem;
+    pointer-events: auto;
+    text-align: center;
+  }
+</style>
+
+<script>
+  import * as THREE from 'three';
+
+  function initThreeHero() {
+    const container = document.querySelector<HTMLElement>('.three-hero-container');
+    const canvas = document.querySelector<HTMLCanvasElement>('#three-hero-canvas');
+
+    if (!container || !canvas) return;
+
+    // 1. Scene & Camera
+    const scene = new THREE.Scene();
+    let width = container.clientWidth || window.innerWidth;
+    let height = container.clientHeight || window.innerHeight;
+
+    const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 1000);
+    camera.position.z = 5.5;
+
+    // 2. WebGL Renderer with DPR clamping
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: true,
+      powerPreference: 'high-performance'
+    });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+    // 3. Procedural Glowing Centerpiece (Torus Knot + Core Sphere)
+    const knotGeometry = new THREE.TorusKnotGeometry(1.5, 0.42, 128, 32);
+    const knotMaterial = new THREE.MeshStandardMaterial({
+      color: 0x6366f1,
+      roughness: 0.25,
+      metalness: 0.85,
+      wireframe: true,
+      emissive: 0x4338ca,
+      emissiveIntensity: 0.45
+    });
+    const knotMesh = new THREE.Mesh(knotGeometry, knotMaterial);
+    scene.add(knotMesh);
+
+    // Inner glowing core
+    const coreGeometry = new THREE.IcosahedronGeometry(0.85, 2);
+    const coreMaterial = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      roughness: 0.2,
+      metalness: 0.9,
+      wireframe: true,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.7
+    });
+    const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
+    scene.add(coreMesh);
+
+    // 4. Floating Particle Constellation (1,500 particles)
+    const particleCount = 1500;
+    const particlePositions = new Float32Array(particleCount * 3);
+    const particleColors = new Float32Array(particleCount * 3);
+
+    const c1 = new THREE.Color(0x6366f1); // Indigo
+    const c2 = new THREE.Color(0x38bdf8); // Sky blue
+    const c3 = new THREE.Color(0xa855f7); // Purple
+
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 3;
+      particlePositions[idx] = (Math.random() - 0.5) * 22;
+      particlePositions[idx + 1] = (Math.random() - 0.5) * 22;
+      particlePositions[idx + 2] = (Math.random() - 0.5) * 16;
+
+      const pick = i % 3;
+      const col = pick === 0 ? c1 : pick === 1 ? c2 : c3;
+      particleColors[idx] = col.r;
+      particleColors[idx + 1] = col.g;
+      particleColors[idx + 2] = col.b;
+    }
+
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute('position', new THREE.BufferAttribute(particlePositions, 3));
+    particleGeometry.setAttribute('color', new THREE.BufferAttribute(particleColors, 3));
+
+    const particleMaterial = new THREE.PointsMaterial({
+      size: 0.045,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.75,
+      blending: THREE.AdditiveBlending
+    });
+    const particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particleSystem);
+
+    // 5. Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+
+    const pointLight1 = new THREE.PointLight(0x6366f1, 30, 50);
+    pointLight1.position.set(5, 4, 4);
+    scene.add(pointLight1);
+
+    const pointLight2 = new THREE.PointLight(0x38bdf8, 25, 50);
+    pointLight2.position.set(-5, -4, 3);
+    scene.add(pointLight2);
+
+    // 6. Smooth Pointer Parallax with Inertial Interpolation
+    let targetX = 0;
+    let targetY = 0;
+    let currentX = 0;
+    let currentY = 0;
+
+    function handlePointerMove(e: PointerEvent) {
+      const halfW = window.innerWidth / 2;
+      const halfH = window.innerHeight / 2;
+      targetX = (e.clientX - halfW) * 0.0008;
+      targetY = (e.clientY - halfH) * 0.0008;
+    }
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+
+    // 7. Resize Observer & Handler
+    function handleResize() {
+      if (!container) return;
+      width = container.clientWidth || window.innerWidth;
+      height = container.clientHeight || window.innerHeight;
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      if (isReducedMotion) {
+        renderer.render(scene, camera);
+      }
+    }
+    window.addEventListener('resize', handleResize, { passive: true });
+
+    // 8. Accessibility & Reduced Motion Handling
+    const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    let isReducedMotion = motionQuery.matches;
+
+    function handleMotionChange(e: MediaQueryListEvent) {
+      isReducedMotion = e.matches;
+      if (isReducedMotion) {
+        stopLoop();
+        renderer.render(scene, camera);
+      } else if (isIntersecting && !document.hidden) {
+        startLoop();
+      }
+    }
+    motionQuery.addEventListener('change', handleMotionChange);
+
+    // 9. Battery & Resource Optimization: IntersectionObserver & Visibility
+    let isIntersecting = true;
+    let animationFrameId: number | null = null;
+    let lastTime = performance.now();
+
+    function renderFrame(time: number) {
+      if (!isIntersecting || document.hidden || isReducedMotion) {
+        animationFrameId = null;
+        return;
+      }
+
+      animationFrameId = requestAnimationFrame(renderFrame);
+
+      const delta = Math.min((time - lastTime) / 1000, 0.1);
+      lastTime = time;
+
+      // Smooth parallax lerp
+      currentX += (targetX - currentX) * 0.05;
+      currentY += (targetY - currentY) * 0.05;
+
+      // Mesh rotations
+      knotMesh.rotation.x += 0.25 * delta + currentY * 0.3;
+      knotMesh.rotation.y += 0.35 * delta + currentX * 0.3;
+
+      coreMesh.rotation.x -= 0.2 * delta;
+      coreMesh.rotation.y -= 0.3 * delta;
+
+      // Particle constellation drift & tilt
+      particleSystem.rotation.y += 0.04 * delta;
+      particleSystem.rotation.x = currentY * 0.2;
+      particleSystem.rotation.z = currentX * 0.2;
+
+      renderer.render(scene, camera);
+    }
+
+    function startLoop() {
+      if (!animationFrameId && isIntersecting && !document.hidden && !isReducedMotion) {
+        lastTime = performance.now();
+        animationFrameId = requestAnimationFrame(renderFrame);
+      }
+    }
+
+    function stopLoop() {
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+      }
+    }
+
+    // IntersectionObserver to pause loop when off-screen
+    const intersectionObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        isIntersecting = entry.isIntersecting;
+        if (isIntersecting) {
+          startLoop();
+        } else {
+          stopLoop();
+        }
+      }
+    }, { threshold: 0.05 });
+    intersectionObserver.observe(container);
+
+    // Listen to contentvisibilityautostatechange as progressive enhancement
+    container.addEventListener('contentvisibilityautostatechange', ((e: any) => {
+      if (e.skipped) {
+        stopLoop();
+      } else {
+        startLoop();
+      }
+    }) as EventListener);
+
+    // Document visibility change (tab switching)
+    function handleVisibilityChange() {
+      if (document.hidden) {
+        stopLoop();
+      } else if (isIntersecting && !isReducedMotion) {
+        startLoop();
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // Initial render
+    if (isReducedMotion) {
+      renderer.render(scene, camera);
+    } else {
+      startLoop();
+    }
+
+    // 10. Teardown & Resource Disposal Logic
+    function cleanup() {
+      stopLoop();
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('resize', handleResize);
+      motionQuery.removeEventListener('change', handleMotionChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      intersectionObserver.disconnect();
+
+      // Dispose Three.js WebGL resources
+      knotGeometry.dispose();
+      knotMaterial.dispose();
+      coreGeometry.dispose();
+      coreMaterial.dispose();
+      particleGeometry.dispose();
+      particleMaterial.dispose();
+      renderer.dispose();
+    }
+
+    document.addEventListener('astro:before-swap', cleanup, { once: true });
+    window.addEventListener('beforeunload', cleanup, { once: true });
+  }
+
+  // Execute on initial page load and view transitions
+  initThreeHero();
+  document.addEventListener('astro:page-load', initThreeHero);
+</script>
