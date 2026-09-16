@@ -24,8 +24,6 @@ const { id = "hero", class: className = "" } = Astro.props;
     justify-content: center;
     overflow: hidden;
     background: radial-gradient(circle at 50% 40%, #151828 0%, #08090d 80%, #050608 100%);
-    content-visibility: auto;
-    contain-intrinsic-size: auto none auto 100vh;
   }
 
   .three-hero-canvas {
@@ -52,13 +50,52 @@ const { id = "hero", class: className = "" } = Astro.props;
 </style>
 
 <script>
-  import * as THREE from 'three';
+  let activeCleanup: (() => void) | null = null;
 
-  function initThreeHero() {
+  async function initThreeHero() {
     const container = document.querySelector<HTMLElement>('.three-hero-container');
     const canvas = document.querySelector<HTMLCanvasElement>('#three-hero-canvas');
 
     if (!container || !canvas) return;
+
+    // Prevent double initialization
+    if (canvas.dataset.threeInitialized === 'true') return;
+    canvas.dataset.threeInitialized = 'true';
+
+    // Status pill dynamic updater
+    const statusText = document.querySelector<HTMLElement>('.status-text');
+    const statusIndicator = document.querySelector<HTMLElement>('.status-indicator');
+
+    function updateStatus(state: 'active' | 'standby' | 'reduced-motion' | 'fallback') {
+      if (!statusText || !statusIndicator) return;
+      if (state === 'active') {
+        statusIndicator.style.background = '#10b981';
+        statusIndicator.style.boxShadow = '0 0 6px #10b981';
+        statusText.innerHTML = 'Three.js WebGL Engine: <strong>Active (60 FPS)</strong>';
+      } else if (state === 'standby') {
+        statusIndicator.style.background = '#f59e0b';
+        statusIndicator.style.boxShadow = '0 0 6px #f59e0b';
+        statusText.innerHTML = 'Three.js WebGL Engine: <strong>Standby (GPU Idle)</strong>';
+      } else if (state === 'reduced-motion') {
+        statusIndicator.style.background = '#38bdf8';
+        statusIndicator.style.boxShadow = '0 0 6px #38bdf8';
+        statusText.innerHTML = 'Three.js WebGL Engine: <strong>Static (Reduced Motion)</strong>';
+      } else if (state === 'fallback') {
+        statusIndicator.style.background = '#94a3b8';
+        statusIndicator.style.boxShadow = 'none';
+        statusText.innerHTML = 'Three.js WebGL Engine: <strong>CSS Fallback Mode</strong>';
+      }
+    }
+
+    // Dynamically load Three.js to preserve Zero-JS Initial Paint
+    let THREE: typeof import('three');
+    try {
+      THREE = await import('three');
+    } catch (err) {
+      console.warn('Failed to load Three.js:', err);
+      updateStatus('fallback');
+      return;
+    }
 
     // 1. Scene & Camera
     const scene = new THREE.Scene();
@@ -66,19 +103,39 @@ const { id = "hero", class: className = "" } = Astro.props;
     let height = container.clientHeight || window.innerHeight;
 
     const camera = new THREE.PerspectiveCamera(55, width / height, 0.1, 1000);
-    camera.position.z = 5.5;
 
-    // 2. WebGL Renderer with DPR clamping
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true,
-      alpha: true,
-      powerPreference: 'high-performance'
-    });
-    renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    function updateCameraZ(w: number, h: number) {
+      const aspect = w / h;
+      if (aspect < 1) {
+        // Mobile portrait: pull camera back so the knot is fully visible without clipping
+        camera.position.z = Math.min(8.5, (5.5 / aspect) * 0.72);
+      } else {
+        camera.position.z = 5.5;
+      }
+    }
+    updateCameraZ(width, height);
 
-    // 3. Procedural Glowing Centerpiece (Torus Knot + Core Sphere)
+    // 2. WebGL Renderer with DPR clamping & error handling
+    let renderer: InstanceType<typeof THREE.WebGLRenderer>;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: true,
+        powerPreference: 'high-performance'
+      });
+      renderer.setSize(width, height, false);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    } catch (err) {
+      console.warn('WebGL context creation failed, falling back:', err);
+      updateStatus('fallback');
+      return;
+    }
+
+    // 3. Procedural Glowing Centerpiece (Torus Knot + Core Sphere) inside Hero Group
+    const heroGroup = new THREE.Group();
+    scene.add(heroGroup);
+
     const knotGeometry = new THREE.TorusKnotGeometry(1.5, 0.42, 128, 32);
     const knotMaterial = new THREE.MeshStandardMaterial({
       color: 0x6366f1,
@@ -89,7 +146,7 @@ const { id = "hero", class: className = "" } = Astro.props;
       emissiveIntensity: 0.45
     });
     const knotMesh = new THREE.Mesh(knotGeometry, knotMaterial);
-    scene.add(knotMesh);
+    heroGroup.add(knotMesh);
 
     // Inner glowing core
     const coreGeometry = new THREE.IcosahedronGeometry(0.85, 2);
@@ -102,7 +159,7 @@ const { id = "hero", class: className = "" } = Astro.props;
       emissiveIntensity: 0.7
     });
     const coreMesh = new THREE.Mesh(coreGeometry, coreMaterial);
-    scene.add(coreMesh);
+    heroGroup.add(coreMesh);
 
     // 4. Floating Particle Constellation (1,500 particles)
     const particleCount = 1500;
@@ -115,9 +172,9 @@ const { id = "hero", class: className = "" } = Astro.props;
 
     for (let i = 0; i < particleCount; i++) {
       const idx = i * 3;
-      particlePositions[idx] = (Math.random() - 0.5) * 22;
-      particlePositions[idx + 1] = (Math.random() - 0.5) * 22;
-      particlePositions[idx + 2] = (Math.random() - 0.5) * 16;
+      particlePositions[idx] = (Math.random() - 0.5) * 24;
+      particlePositions[idx + 1] = (Math.random() - 0.5) * 24;
+      particlePositions[idx + 2] = (Math.random() - 0.5) * 18;
 
       const pick = i % 3;
       const col = pick === 0 ? c1 : pick === 1 ? c2 : c3;
@@ -164,22 +221,46 @@ const { id = "hero", class: className = "" } = Astro.props;
       targetX = (e.clientX - halfW) * 0.0008;
       targetY = (e.clientY - halfH) * 0.0008;
     }
-    window.addEventListener('pointermove', handlePointerMove, { passive: true });
 
-    // 7. Resize Observer & Handler
-    function handleResize() {
-      if (!container) return;
-      width = container.clientWidth || window.innerWidth;
-      height = container.clientHeight || window.innerHeight;
+    function handlePointerReset() {
+      targetX = 0;
+      targetY = 0;
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+    window.addEventListener('pointerleave', handlePointerReset);
+    window.addEventListener('pointerup', handlePointerReset);
+    window.addEventListener('pointercancel', handlePointerReset);
+
+    // 7. Responsive Canvas Resize Observer
+    function applyDimensions(newW: number, newH: number) {
+      width = newW;
+      height = newH;
       camera.aspect = width / height;
+      updateCameraZ(width, height);
       camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
+      renderer.setSize(width, height, false);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       if (isReducedMotion) {
         renderer.render(scene, camera);
       }
     }
-    window.addEventListener('resize', handleResize, { passive: true });
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: w, height: h } = entry.contentRect;
+        if (w > 0 && h > 0) {
+          applyDimensions(w, h);
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    function handleWindowResize() {
+      if (!container) return;
+      applyDimensions(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+    }
+    window.addEventListener('resize', handleWindowResize, { passive: true });
 
     // 8. Accessibility & Reduced Motion Handling
     const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -189,17 +270,32 @@ const { id = "hero", class: className = "" } = Astro.props;
       isReducedMotion = e.matches;
       if (isReducedMotion) {
         stopLoop();
+        heroGroup.rotation.set(0.15, 0.25, 0);
+        camera.position.set(0, 0, camera.position.z);
         renderer.render(scene, camera);
+        updateStatus('reduced-motion');
       } else if (isIntersecting && !document.hidden) {
         startLoop();
       }
     }
-    motionQuery.addEventListener('change', handleMotionChange);
+
+    if (motionQuery.addEventListener) {
+      motionQuery.addEventListener('change', handleMotionChange);
+    } else {
+      (motionQuery as any).addListener(handleMotionChange);
+    }
 
     // 9. Battery & Resource Optimization: IntersectionObserver & Visibility
     let isIntersecting = true;
     let animationFrameId: number | null = null;
     let lastTime = performance.now();
+
+    // Autonomous base rotation angles
+    let baseRotX = 0;
+    let baseRotY = 0;
+    let baseCoreRotX = 0;
+    let baseCoreRotY = 0;
+    let baseParticleRotY = 0;
 
     function renderFrame(time: number) {
       if (!isIntersecting || document.hidden || isReducedMotion) {
@@ -216,17 +312,29 @@ const { id = "hero", class: className = "" } = Astro.props;
       currentX += (targetX - currentX) * 0.05;
       currentY += (targetY - currentY) * 0.05;
 
-      // Mesh rotations
-      knotMesh.rotation.x += 0.25 * delta + currentY * 0.3;
-      knotMesh.rotation.y += 0.35 * delta + currentX * 0.3;
+      // Base autonomous rotations (steady, framerate-independent)
+      baseRotX += 0.22 * delta;
+      baseRotY += 0.32 * delta;
+      baseCoreRotX -= 0.18 * delta;
+      baseCoreRotY -= 0.26 * delta;
+      baseParticleRotY += 0.035 * delta;
 
-      coreMesh.rotation.x -= 0.2 * delta;
-      coreMesh.rotation.y -= 0.3 * delta;
+      knotMesh.rotation.set(baseRotX, baseRotY, 0);
+      coreMesh.rotation.set(baseCoreRotX, baseCoreRotY, 0);
 
-      // Particle constellation drift & tilt
-      particleSystem.rotation.y += 0.04 * delta;
-      particleSystem.rotation.x = currentY * 0.2;
-      particleSystem.rotation.z = currentX * 0.2;
+      // Smooth parallax tilt applied to heroGroup without runaway acceleration
+      heroGroup.rotation.x = currentY * 0.5;
+      heroGroup.rotation.y = currentX * 0.5;
+
+      // Parallax tilt on particle constellation
+      particleSystem.rotation.x = currentY * 0.25;
+      particleSystem.rotation.y = baseParticleRotY + currentX * 0.15;
+      particleSystem.rotation.z = currentX * 0.1;
+
+      // Subtle camera parallax offset for genuine depth perception
+      camera.position.x = currentX * 0.6;
+      camera.position.y = -currentY * 0.6;
+      camera.lookAt(0, 0, 0);
 
       renderer.render(scene, camera);
     }
@@ -235,6 +343,7 @@ const { id = "hero", class: className = "" } = Astro.props;
       if (!animationFrameId && isIntersecting && !document.hidden && !isReducedMotion) {
         lastTime = performance.now();
         animationFrameId = requestAnimationFrame(renderFrame);
+        updateStatus('active');
       }
     }
 
@@ -242,6 +351,9 @@ const { id = "hero", class: className = "" } = Astro.props;
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
+      }
+      if (!isReducedMotion) {
+        updateStatus('standby');
       }
     }
 
@@ -258,15 +370,6 @@ const { id = "hero", class: className = "" } = Astro.props;
     }, { threshold: 0.05 });
     intersectionObserver.observe(container);
 
-    // Listen to contentvisibilityautostatechange as progressive enhancement
-    container.addEventListener('contentvisibilityautostatechange', ((e: any) => {
-      if (e.skipped) {
-        stopLoop();
-      } else {
-        startLoop();
-      }
-    }) as EventListener);
-
     // Document visibility change (tab switching)
     function handleVisibilityChange() {
       if (document.hidden) {
@@ -277,21 +380,31 @@ const { id = "hero", class: className = "" } = Astro.props;
     }
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
-    // Initial render
+    // Initial render / loop start
     if (isReducedMotion) {
+      heroGroup.rotation.set(0.15, 0.25, 0);
       renderer.render(scene, camera);
+      updateStatus('reduced-motion');
     } else {
       startLoop();
     }
 
-    // 10. Teardown & Resource Disposal Logic
+    // 10. Comprehensive Teardown & Resource Disposal Logic
     function cleanup() {
       stopLoop();
       window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('resize', handleResize);
-      motionQuery.removeEventListener('change', handleMotionChange);
+      window.removeEventListener('pointerleave', handlePointerReset);
+      window.removeEventListener('pointerup', handlePointerReset);
+      window.removeEventListener('pointercancel', handlePointerReset);
+      window.removeEventListener('resize', handleWindowResize);
+      if (motionQuery.removeEventListener) {
+        motionQuery.removeEventListener('change', handleMotionChange);
+      } else {
+        (motionQuery as any).removeListener(handleMotionChange);
+      }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       intersectionObserver.disconnect();
+      resizeObserver.disconnect();
 
       // Dispose Three.js WebGL resources
       knotGeometry.dispose();
@@ -301,13 +414,36 @@ const { id = "hero", class: className = "" } = Astro.props;
       particleGeometry.dispose();
       particleMaterial.dispose();
       renderer.dispose();
+      renderer.forceContextLoss();
+
+      if (canvas) {
+        delete canvas.dataset.threeInitialized;
+      }
+      activeCleanup = null;
     }
 
+    activeCleanup = cleanup;
     document.addEventListener('astro:before-swap', cleanup, { once: true });
     window.addEventListener('beforeunload', cleanup, { once: true });
   }
 
-  // Execute on initial page load and view transitions
-  initThreeHero();
-  document.addEventListener('astro:page-load', initThreeHero);
+  // Schedule initialization during idle to preserve Zero-JS initial paint
+  function scheduleInit() {
+    if (activeCleanup) {
+      activeCleanup();
+    }
+    if ('requestIdleCallback' in window) {
+      (window as any).requestIdleCallback(() => initThreeHero(), { timeout: 1200 });
+    } else {
+      setTimeout(initThreeHero, 10);
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', scheduleInit, { once: true });
+  } else {
+    scheduleInit();
+  }
+
+  document.addEventListener('astro:page-load', scheduleInit);
 </script>
